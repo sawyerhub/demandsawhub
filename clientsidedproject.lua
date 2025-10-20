@@ -1,220 +1,273 @@
--- Client-sided Project Loader + Freecam/Fly/Slide
--- Safe for Roblox Studio / single-player testing / your own games only.
--- Simple GUI with buttons to load local modules like Freecam/Fly.
-
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+
 local player = Players.LocalPlayer
-local PlayerGui = player:WaitForChild("PlayerGui")
+local camera = workspace.CurrentCamera
 
--- PROJECT REGISTRY ------------------------------------------------------
--- Each project here can be toggled via button.
--- Add new ones easily: {Name="Your Project", Load=function() ... end}
---------------------------------------------------------------------------
-local projects = {}
+local config = {
+    freecamSpeed = 100,
+    flySpeed = 50,
+    slideSpeed = 60,
+    mouseSensitivity = 0.2,
+    smoothTime = 0.08,
+    toggleFreecamKey = Enum.KeyCode.RightControl,
+    toggleFlyKey = Enum.KeyCode.F,
+    slideKey = Enum.KeyCode.LeftControl,
+}
 
--- FREECAM/FLY MODULE ----------------------------------------------------
-projects[1] = {
-    Name = "Freecam / Fly / Slide",
-    Description = "Client-sided movement tools for testing.",
-    Load = function()
-        if PlayerGui:FindFirstChild("ClientAdminHints") then return end
+local freecamEnabled = false
+local flyEnabled = false
+local sliding = false
+local pressed = {}
+local camRot = Vector2.new(0,0)
+local camVelocity = Vector3.new()
 
-        local scriptClone = Instance.new("LocalScript")
-        scriptClone.Name = "Client_FreecamFlySlide"
-        scriptClone.Source = [[
-        local Players = game:GetService("Players")
-        local UserInputService = game:GetService("UserInputService")
-        local RunService = game:GetService("RunService")
-        local StarterGui = game:GetService("StarterGui")
-        local player = Players.LocalPlayer
-        local camera = workspace.CurrentCamera
+local moveKeys = {
+    [Enum.KeyCode.W] = Vector3.new(0,0,-1),
+    [Enum.KeyCode.S] = Vector3.new(0,0,1),
+    [Enum.KeyCode.A] = Vector3.new(-1,0,0),
+    [Enum.KeyCode.D] = Vector3.new(1,0,0),
+    [Enum.KeyCode.E] = Vector3.new(0,1,0),
+    [Enum.KeyCode.Q] = Vector3.new(0,-1,0),
+}
 
-        local config = {
-            toggleFreecamKey = Enum.KeyCode.RightControl,
-            toggleFlyKey = Enum.KeyCode.F,
-            slideKey = Enum.KeyCode.LeftControl,
-            freecamSpeed = 100,
-            flySpeed = 50,
-            slideSpeed = 60,
-            mouseSensitivity = 0.2,
-            smoothTime = 0.08,
-        }
+local function smoothDamp(current, target, smoothTime, dt)
+    local t = 1 - math.exp(-dt / math.max(0.0001, smoothTime))
+    return current:Lerp(target, t)
+end
 
-        local freecamActive, flyActive, sliding = false, false, false
-        local camVelocity = Vector3.new()
-        local camRot = Vector2.new(0,0)
-        local pressed = {}
+local function enableFreecam()
+    if freecamEnabled then return end
+    freecamEnabled = true
+    camera.CameraType = Enum.CameraType.Scriptable
+    -- capture camera rotation
+    local _, yaw, pitch = camera.CFrame:ToOrientation()
+    camRot = Vector2.new(math.deg(yaw), math.deg(pitch))
+    StarterGui:SetCore("TopbarEnabled", false)
+end
 
-        local moveKeys = {
-            [Enum.KeyCode.W] = Vector3.new(0,0,-1),
-            [Enum.KeyCode.S] = Vector3.new(0,0,1),
-            [Enum.KeyCode.A] = Vector3.new(-1,0,0),
-            [Enum.KeyCode.D] = Vector3.new(1,0,0),
-            [Enum.KeyCode.E] = Vector3.new(0,1,0),
-            [Enum.KeyCode.Q] = Vector3.new(0,-1,0),
-        }
+local function disableFreecam()
+    if not freecamEnabled then return end
+    freecamEnabled = false
+    camera.CameraType = Enum.CameraType.Custom
+    StarterGui:SetCore("TopbarEnabled", true)
+end
 
-        local function enableFreecam()
-            if freecamActive then return end
-            freecamActive = true
-            camera.CameraType = Enum.CameraType.Scriptable
-            StarterGui:SetCore("TopbarEnabled", false)
+local function toggleFly()
+    flyEnabled = not flyEnabled
+    if player.Character and player.Character:FindFirstChild("Humanoid") then
+        player.Character.Humanoid.PlatformStand = flyEnabled
+    end
+end
+
+local function startSlide()
+    sliding = true
+end
+local function stopSlide()
+    sliding = false
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        local kc = input.KeyCode
+        if kc == config.toggleFreecamKey then
+            if freecamEnabled then disableFreecam() else enableFreecam() end
+        elseif kc == config.toggleFlyKey then
+            toggleFly()
+        elseif kc == config.slideKey then
+            startSlide()
+        else
+            pressed[kc] = true
         end
+    end
+end)
 
-        local function disableFreecam()
-            if not freecamActive then return end
-            freecamActive = false
-            camera.CameraType = Enum.CameraType.Custom
-            StarterGui:SetCore("TopbarEnabled", true)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        pressed[input.KeyCode] = nil
+        if input.KeyCode == config.slideKey then
+            stopSlide()
         end
+    end
+end)
 
-        local function toggleFly()
-            flyActive = not flyActive
-            if player.Character and player.Character:FindFirstChild("Humanoid") then
-                player.Character.Humanoid.PlatformStand = flyActive
+UserInputService.InputChanged:Connect(function(input)
+    if freecamEnabled and input.UserInputType == Enum.UserInputType.MouseMovement then
+        camRot = camRot + Vector2.new(-input.Delta.x * config.mouseSensitivity, -input.Delta.y * config.mouseSensitivity)
+        camRot = Vector2.new(camRot.X, math.clamp(camRot.Y, -89, 89))
+    end
+end)
+
+local lastTick = tick()
+RunService.RenderStepped:Connect(function()
+    local now = tick()
+    local dt = math.clamp(now - lastTick, 0, 0.05)
+    lastTick = now
+
+    if freecamEnabled then
+        local yaw = math.rad(camRot.X)
+        local pitch = math.rad(camRot.Y)
+        local camCF = CFrame.new(camera.CFrame.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+        local forward = camCF.LookVector
+        local right = camCF.RightVector
+        local up = Vector3.new(0,1,0)
+
+        local moveDir = Vector3.new()
+        for key, vec in pairs(moveKeys) do
+            if pressed[key] then
+                if vec.Y ~= 0 then
+                    moveDir = moveDir + up * vec.Y
+                else
+                    moveDir = moveDir + (forward * vec.Z + right * vec.X)
+                end
             end
         end
 
-        UserInputService.InputBegan:Connect(function(input, gp)
-            if gp then return end
-            if input.KeyCode == config.toggleFreecamKey then
-                if freecamActive then disableFreecam() else enableFreecam() end
-            elseif input.KeyCode == config.toggleFlyKey then
-                toggleFly()
-            elseif input.KeyCode == config.slideKey then
-                sliding = true
-            else
-                pressed[input.KeyCode] = true
-            end
-        end)
-        UserInputService.InputEnded:Connect(function(input)
-            pressed[input.KeyCode] = nil
-            if input.KeyCode == config.slideKey then sliding = false end
-        end)
+        local sprint = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+        local targetSpeed = config.freecamSpeed * (sprint and 2 or 1)
+        local targetVel = (moveDir.Magnitude > 0) and moveDir.Unit * targetSpeed or Vector3.new()
 
-        UserInputService.InputChanged:Connect(function(input)
-            if freecamActive and input.UserInputType == Enum.UserInputType.MouseMovement then
-                camRot = camRot + Vector2.new(-input.Delta.x * config.mouseSensitivity, -input.Delta.y * config.mouseSensitivity)
-                camRot = Vector2.new(camRot.X, math.clamp(camRot.Y, -89, 89))
-            end
-        end)
+        camVelocity = smoothDamp(camVelocity, targetVel, config.smoothTime, dt)
 
-        local function smoothDamp(current, target, smoothTime, dt)
-            local t = 1 - math.exp(-dt / math.max(0.0001, smoothTime))
-            return current:Lerp(target, t)
+        local newPos = camera.CFrame.Position + camVelocity * dt
+        camera.CFrame = CFrame.new(newPos, newPos + camCF.LookVector)
+    end
+
+    if flyEnabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        local hrp = player.Character.HumanoidRootPart
+        local cf = camera.CFrame
+        local dir = Vector3.new()
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cf.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cf.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cf.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cf.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then dir = dir + Vector3.new(0,1,0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then dir = dir - Vector3.new(0,1,0) end
+
+        if dir.Magnitude > 0 then
+            hrp.CFrame = hrp.CFrame + dir.Unit * config.flySpeed * dt
         end
+    end
 
-        local function performSlide(dt)
-            if not sliding or not player.Character then return end
-            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-            local humanoid = player.Character:FindFirstChild("Humanoid")
-            if not hrp or not humanoid or humanoid.FloorMaterial == Enum.Material.Air then return end
+    -- Slide movement (client-side, simple ground check)
+    if sliding and player.Character then
+        local humanoid = player.Character:FindFirstChild("Humanoid")
+        local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+        if humanoid and hrp and humanoid.FloorMaterial ~= Enum.Material.Air then
             local look = camera.CFrame.LookVector
             hrp.CFrame = hrp.CFrame + look * config.slideSpeed * dt
         end
-
-        local last = tick()
-        RunService.RenderStepped:Connect(function()
-            local now = tick()
-            local dt = math.clamp(now - last, 0, 0.05)
-            last = now
-
-            if freecamActive then
-                local yaw, pitch = math.rad(camRot.X), math.rad(camRot.Y)
-                local cf = CFrame.new(camera.CFrame.Position) * CFrame.Angles(0,yaw,0) * CFrame.Angles(pitch,0,0)
-                local f, r, u = cf.LookVector, cf.RightVector, Vector3.new(0,1,0)
-                local move = Vector3.new()
-                for k,v in pairs(moveKeys) do if pressed[k] then
-                    if v.Y~=0 then move+=u*v.Y else move+=(f*v.Z+r*v.X) end end end
-                local sprint = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
-                local targetVel = (move.Magnitude>0 and move.Unit or Vector3.new())*(config.freecamSpeed*(sprint and 2 or 1))
-                camVelocity = smoothDamp(camVelocity,targetVel,config.smoothTime,dt)
-                local newPos = camera.CFrame.Position + camVelocity*dt
-                camera.CFrame = CFrame.new(newPos, newPos+cf.LookVector)
-            end
-
-            if flyActive and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                local hrp = player.Character.HumanoidRootPart
-                local cf = camera.CFrame
-                local dir = Vector3.new()
-                if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir+=cf.LookVector end
-                if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir-=cf.LookVector end
-                if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir-=cf.RightVector end
-                if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir+=cf.RightVector end
-                if UserInputService:IsKeyDown(Enum.KeyCode.E) then dir+=Vector3.new(0,1,0) end
-                if UserInputService:IsKeyDown(Enum.KeyCode.Q) then dir-=Vector3.new(0,1,0) end
-                if dir.Magnitude>0 then hrp.CFrame = hrp.CFrame + dir.Unit*config.flySpeed*dt end
-            end
-            performSlide(dt)
-        end)
-
-        local gui = Instance.new("ScreenGui")
-        gui.Name = "ClientAdminHints"
-        gui.ResetOnSpawn = false
-        local t = Instance.new("TextLabel", gui)
-        t.Size = UDim2.new(0,520,0,60)
-        t.Position = UDim2.new(0,10,1,-80)
-        t.BackgroundTransparency=0.6
-        t.BackgroundColor3=Color3.fromRGB(0,0,0)
-        t.TextColor3=Color3.new(1,1,1)
-        t.TextScaled=true
-        t.Text="RightCtrl=Freecam | F=Fly | Hold LeftCtrl=Slide | Shift=Sprint"
-        gui.Parent = player:WaitForChild("PlayerGui")
-        print("Freecam/Fly/Slide loaded Client-side.")
-        ]]
-        scriptClone.Parent = PlayerGui
-        print("Freecam/Fly/Slide module loaded.")
     end
-}
+end)
 
---------------------------------------------------------------------------
--- GUI Loader Menu
---------------------------------------------------------------------------
+local PlayerGui = player:WaitForChild("PlayerGui")
 local gui = Instance.new("ScreenGui")
-gui.Name = "ProjectLoaderGUI"
+gui.Name = "IntegratedAdminGUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui.Parent = PlayerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 280, 0, 200)
+frame.Name = "MainFrame"
+frame.Size = UDim2.new(0, 280, 0, 160)
 frame.Position = UDim2.new(0, 20, 0, 20)
 frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
-frame.BackgroundTransparency = 0.1
 frame.BorderSizePixel = 0
 frame.Parent = gui
 
 local title = Instance.new("TextLabel")
-title.Text = "Client Project Loader"
-title.Size = UDim2.new(1,0,0,40)
+title.Size = UDim2.new(1,0,0,32)
+title.Position = UDim2.new(0,0,0,0)
 title.BackgroundTransparency = 1
-title.TextColor3 = Color3.new(1,1,1)
+title.Text = "Admin Tools"
 title.TextScaled = true
+title.TextColor3 = Color3.new(1,1,1)
 title.Parent = frame
 
-local list = Instance.new("Frame")
-list.Position = UDim2.new(0,0,0,40)
-list.Size = UDim2.new(1,0,1,-40)
-list.BackgroundTransparency = 1
-list.Parent = frame
-
-local layout = Instance.new("UIListLayout", list)
-layout.Padding = UDim.new(0,6)
-layout.FillDirection = Enum.FillDirection.Vertical
-layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-layout.VerticalAlignment = Enum.VerticalAlignment.Top
-
-for _,proj in ipairs(projects) do
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0,260,0,40)
-    btn.Text = "Load "..proj.Name
-    btn.TextScaled = true
-    btn.BackgroundColor3 = Color3.fromRGB(40,40,40)
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.Parent = list
-    btn.MouseButton1Click:Connect(function()
-        pcall(proj.Load)
-    end)
+local btnY = 40
+local function makeButton(textStr, parent)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, 240, 0, 36)
+    b.Position = UDim2.new(0, 20, 0, btnY)
+    b.Text = textStr
+    b.TextScaled = true
+    b.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    b.TextColor3 = Color3.new(1,1,1)
+    b.Parent = parent
+    btnY = btnY + 44
+    return b
 end
 
-print("Client Project Loader loaded. Click buttons to load local modules.")
+local freecamBtn = makeButton("Toggle Freecam", frame)
+local flyBtn = makeButton("Toggle Fly", frame)
+local slideBtn = makeButton("Hold Slide (Key) / Toggle", frame)
+
+freecamBtn.MouseButton1Click:Connect(function()
+    if freecamEnabled then disableFreecam() else enableFreecam() end
+end)
+
+flyBtn.MouseButton1Click:Connect(function()
+    toggleFly()
+end)
+
+local slideToggled = false
+slideBtn.MouseButton1Click:Connect(function()
+    slideToggled = not slideToggled
+    if slideToggled then startSlide() else stopSlide() end
+end)
+
+-- Draggable frame implementation
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+frame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        -- handled in RenderStepped
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if dragging and dragStart and startPos then
+        local mousePos = UserInputService:GetMouseLocation()
+        local delta = mousePos - dragStart
+        local newX = startPos.X.Offset + delta.X
+        local newY = startPos.Y.Offset + delta.Y
+        -- clamp to screen bounds (simple)
+        newX = math.clamp(newX, 0, math.max(0, workspace.CurrentCamera.ViewportSize.X - frame.Size.X.Offset))
+        newY = math.clamp(newY, 0, math.max(0, workspace.CurrentCamera.ViewportSize.Y - frame.Size.Y.Offset))
+        frame.Position = UDim2.new(0, newX, 0, newY)
+    end
+end)
+
+-- Small footer/help text
+local help = Instance.new("TextLabel")
+help.Size = UDim2.new(1,0,0,26)
+help.Position = UDim2.new(0,0,1,-26)
+help.BackgroundTransparency = 0.6
+help.BackgroundColor3 = Color3.fromRGB(0,0,0)
+help.TextColor3 = Color3.new(1,1,1)
+help.TextScaled = true
+help.Text = string.format("%s to toggle Freecam | %s to toggle Fly | Hold %s to Slide",
+    tostring(config.toggleFreecamKey), tostring(config.toggleFlyKey), tostring(config.slideKey))
+help.Parent = frame
+
+-- Parent GUI
+gui.Parent = PlayerGui
+
+print("Integrated client admin tools loaded. Use the GUI to toggle features or use keybinds.")
