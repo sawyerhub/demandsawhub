@@ -1,6 +1,6 @@
--- Integrated Client Admin Tools — Players-only ESP with Team Colors, Freecam / Fly / Slide / Tracers + Settings + Studio-only Aim Helper (sends "aimbot" system message when enabled)
+-- Integrated Client Admin Tools — Freecam / Fly / Slide / ESP Boxes + Tracers + Settings + Studio-only Aim Helper
 -- LocalScript: place in StarterPlayerScripts. For development and debugging in games you own.
--- NOTE: Aimbot helper only works in Roblox Studio for learning/testing. Do NOT use this in live games.
+-- IMPORTANT: Aimbot helper only works in Roblox Studio for learning/testing. Do NOT use this in live games.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -20,12 +20,12 @@ local config = {
     toggleFreecamKey = Enum.KeyCode.RightControl,
     toggleFlyKey = Enum.KeyCode.F,
     slideKey = Enum.KeyCode.LeftControl,
-    espDistance = 5000, -- studs
+    espDistance = 5000, -- increased per request
     espShowTeamMates = false, -- show only non-teammates by default
     espUpdateMode = "High", -- High / Medium / Low
-    espBoxColor = Color3.fromRGB(255,0,0), -- fallback color
+    espBoxColor = Color3.fromRGB(255,0,0),
     tracersEnabled = true,
-    tracerOrigin = "Center" -- Center or Bottom
+    tracerOrigin = "Bottom" -- Bottom or Center
 }
 
 -- STATE
@@ -36,8 +36,9 @@ local pressed = {}
 local camRot = Vector2.new(0,0)
 local camVelocity = Vector3.new()
 local espEnabled = true
-local espMap = {} -- player -> data {ui, tracer}
+local espMap = {} -- model -> data
 local espUpdateInterval = 0 -- computed from mode
+local tracers = {}
 local settingsOpen = false
 local aimHelperEnabled = false
 
@@ -68,6 +69,7 @@ local function getEspUpdateInterval(mode)
     if mode == "Medium" then return 0.12 end
     return 0.5 -- Low
 end
+
 espUpdateInterval = getEspUpdateInterval(config.espUpdateMode)
 
 -- FREECAM
@@ -77,13 +79,13 @@ local function enableFreecam()
     camera.CameraType = Enum.CameraType.Scriptable
     local _, yaw, pitch = camera.CFrame:ToOrientation()
     camRot = Vector2.new(math.deg(yaw), math.deg(pitch))
-    pcall(function() StarterGui:SetCore("TopbarEnabled", false) end)
+    StarterGui:SetCore("TopbarEnabled", false)
 end
 local function disableFreecam()
     if not freecamEnabled then return end
     freecamEnabled = false
     camera.CameraType = Enum.CameraType.Custom
-    pcall(function() StarterGui:SetCore("TopbarEnabled", true) end)
+    StarterGui:SetCore("TopbarEnabled", true)
 end
 
 -- FLY
@@ -127,238 +129,215 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- GUI root for 2D overlays (boxes & tracers)
+-- ESP / BOX / TRACERS
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "AdminESPGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = player:WaitForChild("PlayerGui")
 
--- utility: create boxed UI for a player
-local function createBoxUI()
-    local container = Instance.new("Frame")
-    container.AnchorPoint = Vector2.new(0,0)
-    container.BackgroundTransparency = 1
-    container.BorderSizePixel = 0
-    container.Size = UDim2.new(0,0,0,0)
-    container.Position = UDim2.new(0,0,0,0)
+local espContainer = Instance.new("Frame")
+espContainer.Size = UDim2.new(1,0,1,0)
+espContainer.BackgroundTransparency = 1
+espContainer.Parent = ScreenGui
+
+local function makeBoxESP(model)
+    if not model then return end
+    local part = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+    if not part then return end
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "ESP_Box"
+    gui.Adornee = part
+    gui.AlwaysOnTop = true
+    gui.Size = UDim2.new(0, 120, 0, 60)
+    gui.StudsOffset = Vector3.new(0, 3, 0)
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1,0,1,0)
+    frame.BackgroundTransparency = 1
+    frame.Parent = gui
 
     local borderThickness = 2
-    local top = Instance.new("Frame", container)
-    top.Name = "Top"
+    local top = Instance.new("Frame", frame)
+    top.Size = UDim2.new(1,0,0,borderThickness)
+    top.Position = UDim2.new(0,0,0,0)
     top.BackgroundColor3 = config.espBoxColor
     top.BorderSizePixel = 0
 
-    local bottom = Instance.new("Frame", container)
-    bottom.Name = "Bottom"
+    local bottom = Instance.new("Frame", frame)
+    bottom.Size = UDim2.new(1,0,0,borderThickness)
+    bottom.Position = UDim2.new(0,0,1,-borderThickness)
     bottom.BackgroundColor3 = config.espBoxColor
     bottom.BorderSizePixel = 0
 
-    local left = Instance.new("Frame", container)
-    left.Name = "Left"
+    local left = Instance.new("Frame", frame)
+    left.Size = UDim2.new(0,borderThickness,1,0)
+    left.Position = UDim2.new(0,0,0,0)
     left.BackgroundColor3 = config.espBoxColor
     left.BorderSizePixel = 0
 
-    local right = Instance.new("Frame", container)
-    right.Name = "Right"
+    local right = Instance.new("Frame", frame)
+    right.Size = UDim2.new(0,borderThickness,1,0)
+    right.Position = UDim2.new(1,-borderThickness,0,0)
     right.BackgroundColor3 = config.espBoxColor
     right.BorderSizePixel = 0
 
-    local nameLabel = Instance.new("TextLabel", container)
-    nameLabel.Name = "Name"
+    local nameLabel = Instance.new("TextLabel", frame)
+    nameLabel.Size = UDim2.new(1,-4,0,20)
+    nameLabel.Position = UDim2.new(0,2,0,0)
     nameLabel.BackgroundTransparency = 1
+    nameLabel.TextScaled = true
+    nameLabel.Text = model.Name
     nameLabel.TextColor3 = Color3.new(1,1,1)
     nameLabel.Font = Enum.Font.SourceSansBold
-    nameLabel.TextScaled = true
-    nameLabel.Text = ""
 
-    local healthBg = Instance.new("Frame", container)
-    healthBg.Name = "HealthBg"
-    healthBg.BackgroundColor3 = Color3.new(0,0,0)
+    local healthBg = Instance.new("Frame", frame)
+    healthBg.Size = UDim2.new(0.6,0,0,6)
+    healthBg.Position = UDim2.new(0.2,0,1,-26)
+    healthBg.AnchorPoint = Vector2.new(0,1)
     healthBg.BackgroundTransparency = 0.5
+    healthBg.BackgroundColor3 = Color3.new(0,0,0)
     healthBg.BorderSizePixel = 0
+
     local healthFill = Instance.new("Frame", healthBg)
-    healthFill.Name = "HealthFill"
+    healthFill.Size = UDim2.new(1,0,1,0)
     healthFill.BackgroundColor3 = Color3.fromRGB(0,255,0)
     healthFill.BorderSizePixel = 0
 
-    container.Parent = ScreenGui
-    return {
-        container = container,
-        top = top, bottom = bottom, left = left, right = right,
-        nameLabel = nameLabel, healthBg = healthBg, healthFill = healthFill
-    }
+    gui.Parent = ScreenGui
+    return {gui = gui, healthFill = healthFill}
 end
 
-local function createTracerUI()
-    local line = Instance.new("Frame")
-    line.Size = UDim2.new(0, 2, 0, 2)
-    line.AnchorPoint = Vector2.new(0,0)
-    line.BackgroundColor3 = config.espBoxColor
-    line.BorderSizePixel = 0
-    line.Visible = false
-    line.Parent = ScreenGui
-    return line
+local function makeTracerGui()
+    local frame = Instance.new("Frame")
+    frame.AnchorPoint = Vector2.new(0.5, 0)
+    frame.Size = UDim2.new(0, 2, 0, 10)
+    frame.BackgroundColor3 = config.espBoxColor
+    frame.BorderSizePixel = 0
+    frame.Parent = ScreenGui
+    frame.Visible = false
+    return frame
 end
 
--- compute 2D bounding box for a model using Model:GetBoundingBox()
-local function getModelScreenRect(model)
-    if not model then return nil end
-    if not model.PrimaryPart then return nil end
-    local ok, cframe, size = pcall(function() return model:GetBoundingBox() end)
-    if not ok or not cframe or not size then return nil end
-
-    local hx, hy, hz = size.X/2, size.Y/2, size.Z/2
-    local corners = {
-        Vector3.new( hx,  hy,  hz), Vector3.new( hx,  hy, -hz), Vector3.new( hx, -hy,  hz), Vector3.new( hx, -hy, -hz),
-        Vector3.new(-hx,  hy,  hz), Vector3.new(-hx,  hy, -hz), Vector3.new(-hx, -hy,  hz), Vector3.new(-hx, -hy, -hz),
-    }
-
-    local minX, minY = math.huge, math.huge
-    local maxX, maxY = -math.huge, -math.huge
-    local anyOnScreen = false
-    for _,corner in ipairs(corners) do
-        local worldPos = (cframe * CFrame.new(corner)).p
-        local sx, sy, onScreen = camera:WorldToViewportPoint(worldPos)
-        if onScreen then anyOnScreen = true end
-        minX = math.min(minX, sx)
-        minY = math.min(minY, sy)
-        maxX = math.max(maxX, sx)
-        maxY = math.max(maxY, sy)
-    end
-    if minX==math.huge then return nil end
-    return {minX=minX, minY=minY, maxX=maxX, maxY=maxY, onScreen=anyOnScreen}
+local function ensureESPForModel(model)
+    if espMap[model] then return end
+    local data = makeBoxESP(model)
+    local tracer = makeTracerGui()
+    espMap[model] = {model = model, guiData = data, tracer = tracer}
 end
-
--- ensure UI exists for player
-local function ensureESPForPlayer(p)
-    if not p or not p.Character or not p.Character.PrimaryPart then return end
-    if espMap[p] then return end
-    local ui = createBoxUI()
-    local tracer = createTracerUI()
-    espMap[p] = {player = p, model = p.Character, ui = ui, tracer = tracer}
-end
-
-local function removeESPForPlayer(p)
-    local data = espMap[p]
+local function removeESPForModel(model)
+    local data = espMap[model]
     if not data then return end
-    if data.ui and data.ui.container and data.ui.container.Parent then data.ui.container:Destroy() end
+    if data.guiData and data.guiData.gui and data.guiData.gui.Parent then data.guiData.gui:Destroy() end
     if data.tracer and data.tracer.Parent then data.tracer:Destroy() end
-    espMap[p] = nil
+    espMap[model] = nil
 end
 
 local function refreshESPList()
-    -- only players (no NPCs)
+    -- add players (non-teammates only if configured)
     for _,p in pairs(Players:GetPlayers()) do
-        if p ~= player and p.Character and p.Character.PrimaryPart then
+        if p ~= player and p.Character then
             if not config.espShowTeamMates and isTeammate(p, player) then
-                removeESPForPlayer(p)
+                removeESPForModel(p.Character)
             else
-                ensureESPForPlayer(p)
+                ensureESPForModel(p.Character)
             end
-        else
-            removeESPForPlayer(p)
         end
     end
-    -- remove any entries for players who left
-    for p,_ in pairs(espMap) do
-        if not p.Parent then removeESPForPlayer(p) end
+    -- add NPC models
+    for _,obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.PrimaryPart and not Players:GetPlayerFromCharacter(obj) then
+            ensureESPForModel(obj)
+        end
     end
 end
 
--- update loop for ESP visuals (runs at configurable interval for performance)
+-- ESP update coroutine (honors performance mode)
 spawn(function()
     while true do
         if espEnabled then
             refreshESPList()
-            for p,data in pairs(espMap) do
-                local model = data.model
-                if model and data.ui and data.ui.container then
-                    local rect = getModelScreenRect(model)
-                    local ui = data.ui
-                    if rect and rect.onScreen and (camera.CFrame.Position - model.PrimaryPart.Position).Magnitude <= config.espDistance then
-                        local minX, minY, maxX, maxY = rect.minX, rect.minY, rect.maxX, rect.maxY
-                        local w, h = math.max(4, maxX - minX), math.max(4, maxY - minY)
-                        ui.container.Position = UDim2.new(0, minX, 0, minY)
-                        ui.container.Size = UDim2.new(0, w, 0, h)
+            -- update visuals
+            for model, data in pairs(espMap) do
+                if data.guiData and data.guiData.gui and data.guiData.gui.Adornee then
+                    local adornee = data.guiData.gui.Adornee
+                    local pos = adornee.Position
+                    local dist = (camera.CFrame.Position - pos).Magnitude
+                    data.guiData.gui.Enabled = dist <= config.espDistance
 
-                        -- border thickness
-                        local thickness = 2
-                        ui.top.Size = UDim2.new(1,0,0,thickness); ui.top.Position = UDim2.new(0,0,0,0)
-                        ui.bottom.Size = UDim2.new(1,0,0,thickness); ui.bottom.Position = UDim2.new(0,0,1,-thickness)
-                        ui.left.Size = UDim2.new(0,thickness,1,0); ui.left.Position = UDim2.new(0,0,0,0)
-                        ui.right.Size = UDim2.new(0,thickness,1,0); ui.right.Position = UDim2.new(1,-thickness,0,0)
-
-                        -- team color: prefer Player.TeamColor when available
-                        local color = config.espBoxColor
-                        if p.TeamColor then color = p.TeamColor.Color end
-                        if isTeammate(p, player) then color = Color3.fromRGB(0,255,0) end
-                        ui.top.BackgroundColor3 = color
-                        ui.bottom.BackgroundColor3 = color
-                        ui.left.BackgroundColor3 = color
-                        ui.right.BackgroundColor3 = color
-
-                        -- name label
-                        ui.nameLabel.Text = p.Name
-                        ui.nameLabel.Position = UDim2.new(0,2,0,0)
-                        ui.nameLabel.Size = UDim2.new(1,-4,0,18)
-
-                        -- health
-                        local humanoid = model:FindFirstChildWhichIsA("Humanoid")
-                        if humanoid then
-                            ui.healthBg.Position = UDim2.new(0.2,0,1,-20)
-                            ui.healthBg.Size = UDim2.new(0.6,0,0,8)
-                            ui.healthBg.AnchorPoint = Vector2.new(0,1)
-                            ui.healthBg.Parent = ui.container
-                            local pct = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
-                            ui.healthFill.Size = UDim2.new(pct, 0, 1, 0)
-                            if pct > 0.6 then ui.healthFill.BackgroundColor3 = Color3.fromRGB(0,255,0)
-                            elseif pct > 0.3 then ui.healthFill.BackgroundColor3 = Color3.fromRGB(255,165,0)
-                            else ui.healthFill.BackgroundColor3 = Color3.fromRGB(255,0,0) end
-                        else
-                            ui.healthBg.Size = UDim2.new(0,0,0,0)
-                        end
-
-                        -- tracer
-                        if config.tracersEnabled and data.tracer then
-                            local origin
-                            if config.tracerOrigin == "Center" then
-                                origin = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
-                            else
-                                origin = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
-                            end
-                            local to = Vector2.new((minX+maxX)/2, (minY+maxY)/2)
-                            local dir = to - origin
-                            local angle = math.deg(math.atan2(dir.Y, dir.X))
-                            local length = dir.Magnitude
-                            local tracer = data.tracer
-                            tracer.Visible = true
-                            tracer.Size = UDim2.new(0, math.max(2, length), 0, 2)
-                            tracer.Position = UDim2.new(0, origin.X - tracer.Size.X.Offset/2, 0, origin.Y - tracer.Size.Y.Offset/2)
-                            tracer.Rotation = angle
-                            tracer.BackgroundColor3 = color
-                        elseif data.tracer then
-                            data.tracer.Visible = false
-                        end
-                    else
-                        -- not on screen or too far
-                        if data.ui and data.ui.container then data.ui.container.Size = UDim2.new(0,0,0,0) end
-                        if data.tracer then data.tracer.Visible = false end
+                    -- update name
+                    local frame = data.guiData.gui:FindFirstChildWhichIsA("Frame")
+                    if frame then
+                        local nameLabel = frame:FindFirstChildWhichIsA("TextLabel")
+                        if nameLabel then nameLabel.Text = model.Name end
                     end
-                else
-                    removeESPForPlayer(p)
+
+                    -- health
+                    local humanoid = model:FindFirstChildWhichIsA("Humanoid")
+                    if humanoid and data.guiData.healthFill then
+                        local pct = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
+                        data.guiData.healthFill.Size = UDim2.new(pct, 0, 1, 0)
+                        if pct > 0.6 then
+                            data.guiData.healthFill.BackgroundColor3 = Color3.fromRGB(0,255,0)
+                        elseif pct > 0.3 then
+                            data.guiData.healthFill.BackgroundColor3 = Color3.fromRGB(255,165,0)
+                        else
+                            data.guiData.healthFill.BackgroundColor3 = Color3.fromRGB(255,0,0)
+                        end
+                    end
                 end
             end
         end
-        if espUpdateInterval > 0 then wait(espUpdateInterval) else RunService.Heartbeat:Wait() end
+        if espUpdateInterval > 0 then
+            wait(espUpdateInterval)
+        else
+            RunService.Heartbeat:Wait()
+        end
+    end
+end)
+
+-- Tracers & per-frame updates (RenderStepped for smooth lines)
+RunService.RenderStepped:Connect(function()
+    -- freecam/fly/slide movement handled elsewhere (omitted here for brevity)
+
+    if espEnabled and config.tracersEnabled then
+        -- compute origin point
+        local originScreen
+        if config.tracerOrigin == "Center" then
+            originScreen = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
+        else -- Bottom
+            originScreen = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
+        end
+
+        for model, data in pairs(espMap) do
+            local gui = data.guiData and data.guiData.gui
+            local tracer = data.tracer
+            if gui and gui.Adornee and tracer then
+                local worldPos = gui.Adornee.Position
+                local screenPos, onScreen = camera:WorldToScreenPoint(worldPos)
+                if onScreen and (camera.CFrame.Position - worldPos).Magnitude <= config.espDistance then
+                    -- show tracer
+                    tracer.Visible = true
+                    local to = Vector2.new(screenPos.X, screenPos.Y)
+                    local dir = to - originScreen
+                    local length = dir.Magnitude
+                    tracer.Size = UDim2.new(0, math.max(2, length), 0, 2)
+                    tracer.Position = UDim2.new(0, originScreen.X - tracer.Size.X.Offset/2, 0, originScreen.Y)
+                    tracer.Rotation = math.deg(math.atan2(dir.Y, dir.X))
+                    tracer.BackgroundColor3 = config.espBoxColor
+                else
+                    tracer.Visible = false
+                end
+            end
+        end
     end
 end)
 
 -- Simple Studio-only aim helper: smoothly rotate camera toward nearest target head
 local function getNearestTarget()
     local best, bestDist = nil, math.huge
-    for p,data in pairs(espMap) do
-        local model = data.model
-        if model and model.PrimaryPart and data.ui and data.ui.container and data.ui.container.Size.X.Offset > 0 then
+    for model, data in pairs(espMap) do
+        if model.Parent and model.PrimaryPart and data.guiData and data.guiData.gui and data.guiData.gui.Enabled then
             local humanoid = model:FindFirstChildWhichIsA("Humanoid")
             if humanoid then
                 local head = model:FindFirstChild("Head") or model.PrimaryPart
@@ -376,6 +355,7 @@ local aimSmoothing = 8 -- larger = slower
 spawn(function()
     while true do
         if aimHelperEnabled then
+            -- only allow in Studio
             if not RunService:IsStudio() then
                 aimHelperEnabled = false
                 warn("Aim helper disabled: only works in Studio")
@@ -383,23 +363,22 @@ spawn(function()
             end
             local target = getNearestTarget()
             if target then
+                local desired = CFrame.new(camera.CFrame.Position, target.Position)
+                -- slerp rotation only
                 local current = camera.CFrame
+                local newCFrame = CFrame.new(current.Position) * CFrame.Angles(0, 0, 0)
+                -- interpolate look vector
+                local curLook = current.LookVector
                 local wantLook = (target.Position - current.Position).Unit
-                local lerpLook = current.LookVector:Lerp(wantLook, math.clamp(1/aimSmoothing, 0, 1))
-                camera.CFrame = CFrame.new(current.Position, current.Position + lerpLook)
+                local lerpLook = curLook:Lerp(wantLook, math.clamp(1/aimSmoothing, 0, 1))
+                local up = Vector3.new(0,1,0)
+                local cf = CFrame.new(current.Position, current.Position + lerpLook)
+                camera.CFrame = cf
             end
         end
         RunService.Heartbeat:Wait()
     end
 end)
-
--- When aim helper is toggled on, show a local system message "aimbot"
-local function announceAimbot(on)
-    local ok, err = pcall(function()
-        StarterGui:SetCore("ChatMakeSystemMessage", {Text = on and "aimbot" or "aimbot disabled"})
-    end)
-    if not ok then warn("Could not send system message:", err) end
-end
 
 -- GUI (main panel + settings)
 local gui = ScreenGui
@@ -450,14 +429,14 @@ end)
 flyBtn.MouseButton1Click:Connect(function() toggleFly() end)
 local slideToggled = false
 slideBtn.MouseButton1Click:Connect(function() slideToggled = not slideToggled if slideToggled then startSlide() else stopSlide() end end)
-espBtn.MouseButton1Click:Connect(function() if espEnabled then espEnabled = false; for k,_ in pairs(espMap) do removeESPForPlayer(k) end else espEnabled = true end end)
+espBtn.MouseButton1Click:Connect(function() if espEnabled then disableESP() else espEnabled = true end end)
 tracerBtn.MouseButton1Click:Connect(function() config.tracersEnabled = not config.tracersEnabled end)
 settingsBtn.MouseButton1Click:Connect(function() settingsOpen = not settingsOpen settingsPanel.Visible = settingsOpen end)
-aimBtn.MouseButton1Click:Connect(function() aimHelperEnabled = not aimHelperEnabled if aimHelperEnabled and not RunService:IsStudio() then aimHelperEnabled = false warn("Aim helper only available in Studio") else announceAimbot(aimHelperEnabled) end end)
+aimBtn.MouseButton1Click:Connect(function() aimHelperEnabled = not aimHelperEnabled if aimHelperEnabled and not RunService:IsStudio() then aimHelperEnabled = false warn("Aim helper only available in Studio") end end)
 
 -- Settings panel (hidden by default)
 local settingsPanel = Instance.new("Frame")
-settingsPanel.Size = UDim2.new(0, 320, 0, 260)
+settingsPanel.Size = UDim2.new(0, 320, 0, 220)
 settingsPanel.Position = UDim2.new(0, 380, 0, 20)
 settingsPanel.BackgroundColor3 = Color3.fromRGB(24,24,24)
 settingsPanel.BorderSizePixel = 0
@@ -521,22 +500,18 @@ end
 
 -- add sliders: freecamSpeed, flySpeed, espDistance
 makeSlider(settingsPanel, 36, "Freecam Speed", 10, 500, config.freecamSpeed, function(v) config.freecamSpeed = v end)
-makeSlider(settingsPanel, 96, "Fly Speed", 10, 300, config.flySpeed, function(v) config.flySpeed = v end)
-makeSlider(settingsPanel, 156, "ESP Distance", 100, 10000, config.espDistance, function(v) config.espDistance = v end)
-
--- teammate toggle
-local teamToggle = Instance.new("TextButton", settingsPanel)
-teamToggle.Size = UDim2.new(0, 140, 0, 28)
-teamToggle.Position = UDim2.new(0, 10, 0, 200)
-teamToggle.Text = (config.espShowTeamMates and "Show Teammates: ON") or "Show Teammates: OFF"
-teamToggle.BackgroundColor3 = Color3.fromRGB(60,60,60)
-teamToggle.TextColor3 = Color3.new(1,1,1)
-teamToggle.MouseButton1Click:Connect(function()
-    config.espShowTeamMates = not config.espShowTeamMates
-    teamToggle.Text = (config.espShowTeamMates and "Show Teammates: ON") or "Show Teammates: OFF"
-end)
+makeSlider(settingsPanel, 90, "Fly Speed", 10, 300, config.flySpeed, function(v) config.flySpeed = v end)
+makeSlider(settingsPanel, 144, "ESP Distance", 100, 5000, config.espDistance, function(v) config.espDistance = v end)
 
 -- box color presets
+local colorLabel = Instance.new("TextLabel", settingsPanel)
+colorLabel.Size = UDim2.new(0, 200, 0, 20)
+colorLabel.Position = UDim2.new(0, 10, 0, 190)
+colorLabel.BackgroundTransparency = 1
+colorLabel.Text = "Box Color"
+colorLabel.TextColor3 = Color3.new(1,1,1)
+colorLabel.TextScaled = false
+
 local presets = {
     Color3.fromRGB(255,0,0),
     Color3.fromRGB(0,255,0),
@@ -546,7 +521,7 @@ local presets = {
 for i,clr in ipairs(presets) do
     local btn = Instance.new("TextButton", settingsPanel)
     btn.Size = UDim2.new(0, 36, 0, 20)
-    btn.Position = UDim2.new(0, 220 + (i-1)*40, 0, 200)
+    btn.Position = UDim2.new(0, 220 + (i-1)*40, 0, 190)
     btn.Text = ""
     btn.BackgroundColor3 = clr
     btn.BorderSizePixel = 0
